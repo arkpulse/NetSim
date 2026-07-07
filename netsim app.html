@@ -1,0 +1,2099 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NetSim AI — Browser Network Simulator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><rect width=%2224%22 height=%2224%22 rx=%226%22 fill=%22%233b82f6%22/><path d=%22M6 12h12M6 7h12M6 17h12%22 stroke=%22white%22 stroke-width=%222%22 stroke-linecap=%22round%22/></svg>" />
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+<!-- Tailwind (play CDN) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- React 18 + Babel standalone (CDN, no build step) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+
+<!-- JSZip for zipped config export -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin></script>
+
+<style>
+  :root{
+    --bg-primary:#0a0e1a;
+    --bg-secondary:#111827;
+    --bg-card:#1a2235;
+    --border:#1e3a5f;
+    --accent-blue:#3b82f6;
+    --accent-green:#10b981;
+    --accent-orange:#f59e0b;
+    --accent-red:#ef4444;
+    --accent-cyan:#06b6d4;
+    --accent-purple:#a855f7;
+    --accent-slate:#94a3b8;
+    --text-primary:#f1f5f9;
+    --text-secondary:#94a3b8;
+    --text-dim:#475569;
+  }
+  html,body{
+    margin:0; padding:0; height:100%; overflow:hidden;
+    background:var(--bg-primary); color:var(--text-primary);
+    font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #root{height:100%;}
+  .font-display{font-family:'JetBrains Mono',monospace;}
+  .font-mono{font-family:'JetBrains Mono',monospace;}
+
+  /* dot grid canvas background */
+  .dot-grid{
+    background-color:var(--bg-primary);
+    background-image:radial-gradient(circle, #1e3a5f 1px, transparent 1px);
+    background-size:24px 24px;
+  }
+
+  ::-webkit-scrollbar{width:10px;height:10px;}
+  ::-webkit-scrollbar-track{background:var(--bg-secondary);}
+  ::-webkit-scrollbar-thumb{background:#26334d;border-radius:8px;}
+  ::-webkit-scrollbar-thumb:hover{background:#33445f;}
+
+  @keyframes toastIn{from{opacity:0;transform:translateY(-8px) scale(.98);}to{opacity:1;transform:translateY(0) scale(1);}}
+  .toast-anim{animation:toastIn .18s ease-out;}
+
+  @keyframes pulseGlow{0%,100%{opacity:1;}50%{opacity:.55;}}
+  .pulse-dot{animation:pulseGlow 1.4s ease-in-out infinite;}
+
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .spin{animation:spin .8s linear infinite;}
+
+  @keyframes dash{to{stroke-dashoffset:-20;}}
+  .flow-dash{stroke-dasharray:5 4;animation:dash 1s linear infinite;}
+
+  .node-glow-router{box-shadow:0 0 0 1px rgba(59,130,246,.4), 0 0 18px 2px rgba(59,130,246,.35);}
+  .node-glow-switch{box-shadow:0 0 0 1px rgba(16,185,129,.4), 0 0 18px 2px rgba(16,185,129,.35);}
+  .node-glow-pc{box-shadow:0 0 0 1px rgba(245,158,11,.4), 0 0 18px 2px rgba(245,158,11,.35);}
+  .node-glow-server{box-shadow:0 0 0 1px rgba(6,182,212,.4), 0 0 18px 2px rgba(6,182,212,.35);}
+  .node-glow-firewall{box-shadow:0 0 0 1px rgba(239,68,68,.4), 0 0 18px 2px rgba(239,68,68,.35);}
+  .node-glow-cloud{box-shadow:0 0 0 1px rgba(148,163,184,.4), 0 0 18px 2px rgba(148,163,184,.35);}
+
+  .node-selected{box-shadow:0 0 0 2px #f1f5f9, 0 0 0 5px rgba(59,130,246,.55), 0 0 26px 4px rgba(59,130,246,.55) !important;}
+
+  textarea, input{outline:none;}
+  textarea:focus, input:focus{outline:none;}
+
+  .scrollbar-thin::-webkit-scrollbar{width:6px;height:6px;}
+
+  [data-tip]{position:relative;}
+</style>
+</head>
+<body class="dot-grid">
+<div id="root"></div>
+
+<script>
+  Babel.registerPreset('netsimReact', {
+    presets: [[Babel.availablePresets.react, { runtime: 'classic' }]]
+  });
+</script>
+<script type="text/babel" data-presets="netsimReact">
+"use strict";
+const { useState, useRef, useEffect, useCallback, useMemo, Fragment } = React;
+
+/* =========================================================================
+   CONSTANTS
+   ========================================================================= */
+
+const DEVICE_TYPES = {
+  router:   { label:'Router',   prefix:'R',    glow:'router',   color:'#3b82f6', startIdx:1 },
+  switch:   { label:'Switch',   prefix:'SW',   glow:'switch',   color:'#10b981', startIdx:1 },
+  pc:       { label:'PC',       prefix:'PC',   glow:'pc',       color:'#f59e0b', startIdx:0 },
+  server:   { label:'Server',   prefix:'SRV',  glow:'server',   color:'#06b6d4', startIdx:0 },
+  firewall: { label:'Firewall', prefix:'FW',   glow:'firewall', color:'#ef4444', startIdx:1 },
+  cloud:    { label:'Cloud',    prefix:'CLOUD',glow:'cloud',    color:'#94a3b8', startIdx:1 },
+};
+
+const LINK_COLORS = {
+  ethernet:'#3b82f6',
+  serial:'#f59e0b',
+  fiber:'#06b6d4',
+  trunk:'#a855f7',
+};
+
+const PROVIDERS = {
+  anthropic:{
+    label:'Anthropic (Claude)',
+    models:['claude-opus-4-6','claude-sonnet-4-6','claude-haiku-4-5-20251001'],
+    needsBaseUrl:false,
+  },
+  openai:{
+    label:'OpenAI (ChatGPT)',
+    models:['gpt-4o','gpt-4o-mini','gpt-4-turbo','gpt-3.5-turbo'],
+    needsBaseUrl:false,
+  },
+  google:{
+    label:'Google (Gemini)',
+    models:['gemini-2.5-flash','gemini-2.5-flash-lite','gemini-2.5-pro','gemini-flash-latest'],
+    needsBaseUrl:false,
+  },
+  mistral:{
+    label:'Mistral',
+    models:['mistral-large-latest','mistral-medium-latest','mistral-small-latest'],
+    needsBaseUrl:false,
+  },
+  custom:{
+    label:'Custom / OpenAI-Compatible',
+    models:[],
+    needsBaseUrl:true,
+  },
+};
+
+const NODE_W = 96, NODE_H = 72, NODE_RADIUS = 46;
+
+/* =========================================================================
+   HELPERS
+   ========================================================================= */
+
+let __uidCounter = 0;
+function uid(prefix){
+  __uidCounter += 1;
+  return `${prefix}-${Date.now().toString(36)}${__uidCounter}`;
+}
+
+function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+
+function deepClone(obj){ return JSON.parse(JSON.stringify(obj)); }
+
+function ipToInt(ip){
+  if(!ip) return null;
+  const parts = ip.split('.').map(n=>parseInt(n,10));
+  if(parts.length!==4 || parts.some(n=>isNaN(n))) return null;
+  return ((parts[0]<<24) >>> 0) + (parts[1]<<16) + (parts[2]<<8) + parts[3];
+}
+
+function networkOf(ip, mask){
+  const ipi = ipToInt(ip), mi = ipToInt(mask);
+  if(ipi===null || mi===null) return null;
+  return (ipi & mi) >>> 0;
+}
+
+function sameSubnet(ipA, maskA, ipB){
+  const netA = networkOf(ipA, maskA);
+  const netB = networkOf(ipB, maskA);
+  return netA!==null && netB!==null && netA===netB;
+}
+
+function getNextInterfaceName(device){
+  const n = device.interfaces.length;
+  switch(device.type){
+    case 'router':
+    case 'firewall':
+      return n < 2 ? `GigabitEthernet0/${n}` : `Serial0/0/${n-2}`;
+    case 'switch':
+      return `FastEthernet0/${n+1}`;
+    case 'pc':
+    case 'server':
+      return n === 0 ? 'FastEthernet0' : `FastEthernet${n}`;
+    case 'cloud':
+      return `Port${n+1}`;
+    default:
+      return `Eth${n}`;
+  }
+}
+
+function defaultLinkType(typeA, typeB){
+  if(typeA==='router' && typeB==='router') return 'serial';
+  if((typeA==='switch' && typeB==='switch')) return 'trunk';
+  if(typeA==='cloud' || typeB==='cloud') return 'fiber';
+  return 'ethernet';
+}
+
+function downloadBlob(filename, content, mime){
+  const blob = new Blob([content], {type: mime || 'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+}
+
+function nowId(){ return Math.random().toString(36).slice(2,10); }
+
+/* Build BFS adjacency from connections */
+function buildGraph(connections){
+  const adj = {};
+  connections.forEach(c=>{
+    if(!adj[c.source]) adj[c.source]=[];
+    if(!adj[c.target]) adj[c.target]=[];
+    adj[c.source].push({to:c.target, via:c});
+    adj[c.target].push({to:c.source, via:c});
+  });
+  return adj;
+}
+
+function bfsPath(connections, sourceId, targetId){
+  if(sourceId===targetId) return [sourceId];
+  const adj = buildGraph(connections);
+  const visited = new Set([sourceId]);
+  const queue = [[sourceId]];
+  while(queue.length){
+    const path = queue.shift();
+    const last = path[path.length-1];
+    const neighbors = adj[last] || [];
+    for(const nb of neighbors){
+      if(visited.has(nb.to)) continue;
+      const newPath = [...path, nb.to];
+      if(nb.to === targetId) return newPath;
+      visited.add(nb.to);
+      queue.push(newPath);
+    }
+  }
+  return null;
+}
+
+
+/* =========================================================================
+   ICONS  (hand-rolled outline icon set, lucide-inspired, no external dep)
+   ========================================================================= */
+
+function Icon({ name, size=16, className='', strokeWidth=2 }){
+  const props = { width:size, height:size, viewBox:'0 0 24 24', fill:'none',
+    stroke:'currentColor', strokeWidth, strokeLinecap:'round', strokeLinejoin:'round',
+    className };
+  switch(name){
+    case 'router': return (
+      <svg {...props}><rect x="3" y="9" width="18" height="7" rx="1.5"/><path d="M7 9V7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/><circle cx="7.5" cy="12.5" r=".6" fill="currentColor"/><circle cx="10.5" cy="12.5" r=".6" fill="currentColor"/><path d="M16 12.5h2M16 14.5h1.4"/></svg>
+    );
+    case 'switch': return (
+      <svg {...props}><rect x="3" y="8" width="18" height="8" rx="1.5"/><path d="M6 11.5h.01M9 11.5h.01M12 11.5h.01M15 11.5h.01M18 11.5h.01M6 14h.01M9 14h.01M12 14h.01M15 14h.01M18 14h.01"/></svg>
+    );
+    case 'pc': return (
+      <svg {...props}><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>
+    );
+    case 'server': return (
+      <svg {...props}><rect x="3" y="4" width="18" height="6" rx="1.2"/><rect x="3" y="14" width="18" height="6" rx="1.2"/><circle cx="7" cy="7" r=".6" fill="currentColor"/><circle cx="7" cy="17" r=".6" fill="currentColor"/></svg>
+    );
+    case 'firewall': return (
+      <svg {...props}><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M9 12h6M9 9h6M9 15h6"/></svg>
+    );
+    case 'cloud': return (
+      <svg {...props}><path d="M7 18a4.5 4.5 0 0 1-.5-8.97A5.5 5.5 0 0 1 17 8a4 4 0 0 1-.5 8H7z"/></svg>
+    );
+    case 'plus': return (<svg {...props}><path d="M12 5v14M5 12h14"/></svg>);
+    case 'x': return (<svg {...props}><path d="M18 6L6 18M6 6l12 12"/></svg>);
+    case 'trash': return (<svg {...props}><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-9 0 1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>);
+    case 'copy': return (<svg {...props}><rect x="9" y="9" width="12" height="12" rx="1.5"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>);
+    case 'settings': return (<svg {...props}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.1.36.3.68.6.92.27.2.6.32.95.34H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.5 1z"/></svg>);
+    case 'download': return (<svg {...props}><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>);
+    case 'upload': return (<svg {...props}><path d="M12 21V9m0 0 4 4m-4-4-4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>);
+    case 'send': return (<svg {...props}><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>);
+    case 'eye': return (<svg {...props}><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>);
+    case 'eyeOff': return (<svg {...props}><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.6 21.6 0 0 1 5.06-5.94M9.9 4.24A10.9 10.9 0 0 1 12 4c7 0 11 7 11 7a21.6 21.6 0 0 1-2.16 3.19m-6.18-.99a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>);
+    case 'check': return (<svg {...props}><path d="M20 6L9 17l-5-5"/></svg>);
+    case 'checkCircle': return (<svg {...props}><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg>);
+    case 'alert': return (<svg {...props}><path d="M12 9v4m0 4h.01M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0z"/></svg>);
+    case 'zap': return (<svg {...props}><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>);
+    case 'play': return (<svg {...props}><path d="M5 3l16 9-16 9V3z"/></svg>);
+    case 'terminal': return (<svg {...props}><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>);
+    case 'bot': return (<svg {...props}><rect x="4" y="8" width="16" height="11" rx="2"/><circle cx="9" cy="13.5" r="1"/><circle cx="15" cy="13.5" r="1"/><path d="M12 8V5m-3-2h6"/></svg>);
+    case 'user': return (<svg {...props}><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 5-6 8-6s6.5 2 8 6"/></svg>);
+    case 'chevronDown': return (<svg {...props}><path d="M6 9l6 6 6-6"/></svg>);
+    case 'menu': return (<svg {...props}><path d="M4 6h16M4 12h16M4 18h16"/></svg>);
+    case 'maximize': return (<svg {...props}><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>);
+    case 'layout': return (<svg {...props}><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>);
+    case 'sparkles': return (<svg {...props}><path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3z"/><path d="M19 14l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2z"/></svg>);
+    case 'fileText': return (<svg {...props}><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-5z"/><path d="M14 3v5h6M9 13h6M9 17h6M9 9h1"/></svg>);
+    case 'folder': return (<svg {...props}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>);
+    case 'wifi': return (<svg {...props}><path d="M5 13a10 10 0 0 1 14 0M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 9.5a14 14 0 0 1 20 0"/><circle cx="12" cy="20" r=".6" fill="currentColor"/></svg>);
+    case 'activity': return (<svg {...props}><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>);
+    case 'route': return (<svg {...props}><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h6a4 4 0 0 0 4-4V9a4 4 0 0 0-4-4h0"/></svg>);
+    case 'list': return (<svg {...props}><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>);
+    case 'edit': return (<svg {...props}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>);
+    case 'loader': return (<svg {...props} className={`${className} spin`}><path d="M12 2v4m0 12v4m10-10h-4M6 12H2m15.4-7.4-2.8 2.8M9.4 14.6l-2.8 2.8m12.8 0-2.8-2.8M9.4 9.4 6.6 6.6"/></svg>);
+    case 'globe': return (<svg {...props}><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>);
+    case 'key': return (<svg {...props}><circle cx="8" cy="15" r="4"/><path d="M10.5 12.5 19 4m-3 3 2 2m-5 0 2 2"/></svg>);
+    default: return null;
+  }
+}
+
+
+/* =========================================================================
+   AI PROVIDER INTEGRATION
+   ========================================================================= */
+
+/**
+ * Unified call into whichever AI provider is configured.
+ * messages: [{role:'user'|'assistant', content:string}, ...]
+ * Returns { ok:true, text } or { ok:false, error }
+ */
+async function callAI(apiSettings, messages, systemPrompt){
+  const { provider, apiKey, model, baseUrl } = apiSettings;
+  if(!apiKey){
+    return { ok:false, error:'No API key configured. Open API Settings to add one.' };
+  }
+  try{
+    if(provider === 'anthropic'){
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version':'2023-06-01',
+          'anthropic-dangerous-direct-browser-access':'true',
+        },
+        body: JSON.stringify({
+          model: model || 'claude-sonnet-4-6',
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: messages.map(m=>({ role: m.role, content: m.content })),
+        }),
+      });
+      const data = await res.json();
+      if(!res.ok){ throw new Error((data && data.error && data.error.message) || `HTTP ${res.status}`); }
+      const text = (data.content || []).filter(b=>b.type==='text').map(b=>b.text).join('\n');
+      return { ok:true, text };
+    }
+
+    if(provider === 'openai' || provider === 'mistral' || provider === 'custom'){
+      const url = provider === 'openai' ? 'https://api.openai.com/v1/chat/completions'
+                : provider === 'mistral' ? 'https://api.mistral.ai/v1/chat/completions'
+                : (baseUrl || '').replace(/\/$/,'') + '/chat/completions';
+      const res = await fetch(url, {
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: model || 'gpt-4o-mini',
+          messages: [{ role:'system', content: systemPrompt }, ...messages],
+          max_tokens: 4096,
+        }),
+      });
+      const data = await res.json();
+      if(!res.ok){ throw new Error((data && data.error && data.error.message) || `HTTP ${res.status}`); }
+      const text = data.choices && data.choices[0] && data.choices[0].message
+        ? data.choices[0].message.content : '';
+      return { ok:true, text };
+    }
+
+    if(provider === 'google'){
+      const m = model || 'gemini-2.5-flash';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`;
+      const res = await fetch(url, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify({
+          contents: messages.map(m2=>({
+            role: m2.role === 'assistant' ? 'model' : 'user',
+            parts:[{ text: m2.content }],
+          })),
+          systemInstruction: { parts:[{ text: systemPrompt }] },
+        }),
+      });
+      const data = await res.json();
+      if(!res.ok){ throw new Error((data && data.error && data.error.message) || `HTTP ${res.status}`); }
+      const cand = data.candidates && data.candidates[0];
+      const text = cand && cand.content && cand.content.parts
+        ? cand.content.parts.map(p=>p.text || '').join('') : '';
+      return { ok:true, text };
+    }
+
+    return { ok:false, error:`Unknown provider: ${provider}` };
+  }catch(err){
+    let msg = err && err.message ? err.message : 'Unknown error';
+    if(msg.includes('Failed to fetch')){
+      msg = 'Network/CORS error reaching the AI provider. Some providers block direct browser calls — try a different provider or a CORS-compatible custom endpoint.';
+    }
+    return { ok:false, error: msg };
+  }
+}
+
+const NETWORK_SYSTEM_PROMPT = (topology, selectedDevice) => `You are a Cisco networking expert assistant inside NetSim AI, a browser-based
+network simulator. You help users design, configure, and troubleshoot networks.
+
+When asked to configure devices, always respond with:
+1. A brief explanation of what you're doing
+2. Complete, copy-pasteable Cisco IOS CLI commands
+3. A JSON block (wrapped in \`\`\`json ... \`\`\`) with the following structure when
+   devices or configs need to be updated in the app:
+
+{
+  "action": "update_configs",
+  "devices": [
+    {
+      "id": "router-1",
+      "config": "enable\\nconf t\\n...(full config)...\\nend",
+      "interfaces": [
+        {"name": "FastEthernet0/0", "ipAddress": "192.168.1.1", "subnetMask": "255.255.255.0", "status": "up"}
+      ]
+    }
+  ],
+  "connections": [],
+  "summary": "Brief summary of what was configured"
+}
+
+Only include the JSON block when you are changing configs/devices. For pure questions
+or explanations, skip the JSON block entirely.
+
+Current network topology: ${JSON.stringify(topology)}
+Selected device: ${selectedDevice ? JSON.stringify(selectedDevice) : 'none'}`;
+
+/** Extract a ```json ... ``` fenced block from AI text. Returns {action,...} or null */
+function extractJsonAction(text){
+  if(!text) return null;
+  const match = text.match(/```json\s*([\s\S]*?)```/i);
+  if(!match) return null;
+  try{
+    return JSON.parse(match[1].trim());
+  }catch(e){
+    return null;
+  }
+}
+
+function stripJsonBlock(text){
+  if(!text) return text;
+  return text.replace(/```json\s*[\s\S]*?```/i, '').trim();
+}
+
+/* =========================================================================
+   STARTER TOPOLOGY
+   ========================================================================= */
+
+function buildStarterTopology(){
+  const devices = [
+    { id:'router-r1', type:'router', label:'R1', position:{x:300,y:200}, interfaces:[], vlans:[], config:'', notes:'' },
+    { id:'router-r2', type:'router', label:'R2', position:{x:600,y:200}, interfaces:[], vlans:[], config:'', notes:'' },
+    { id:'switch-sw1', type:'switch', label:'SW1', position:{x:200,y:400}, interfaces:[], vlans:[], config:'', notes:'' },
+    { id:'switch-sw2', type:'switch', label:'SW2', position:{x:700,y:400}, interfaces:[], vlans:[], config:'', notes:'' },
+    { id:'pc-pc0', type:'pc', label:'PC0', position:{x:100,y:580}, interfaces:[], vlans:[], config:'', notes:'' },
+    { id:'pc-pc1', type:'pc', label:'PC1', position:{x:300,y:580}, interfaces:[], vlans:[], config:'', notes:'' },
+    { id:'pc-pc2', type:'pc', label:'PC2', position:{x:600,y:580}, interfaces:[], vlans:[], config:'', notes:'' },
+    { id:'pc-pc3', type:'pc', label:'PC3', position:{x:800,y:580}, interfaces:[], vlans:[], config:'', notes:'' },
+  ];
+
+  const links = [
+    ['router-r1','router-r2','serial'],
+    ['router-r1','switch-sw1','ethernet'],
+    ['router-r2','switch-sw2','ethernet'],
+    ['switch-sw1','pc-pc0','ethernet'],
+    ['switch-sw1','pc-pc1','ethernet'],
+    ['switch-sw2','pc-pc2','ethernet'],
+    ['switch-sw2','pc-pc3','ethernet'],
+  ];
+
+  const byId = Object.fromEntries(devices.map(d=>[d.id, d]));
+  const connections = [];
+  links.forEach(([a,b,linkType])=>{
+    const devA = byId[a], devB = byId[b];
+    const ifaceA = getNextInterfaceName(devA);
+    devA.interfaces.push({ name:ifaceA, ipAddress:'', subnetMask:'', status:'up', connectedTo:`${devB.id}::PENDING` });
+    const ifaceB = getNextInterfaceName(devB);
+    devB.interfaces.push({ name:ifaceB, ipAddress:'', subnetMask:'', status:'up', connectedTo:`${devA.id}::${ifaceA}` });
+    devA.interfaces[devA.interfaces.length-1].connectedTo = `${devB.id}::${ifaceB}`;
+    connections.push({
+      id: uid('conn'), source:devA.id, sourceHandle:ifaceA, target:devB.id, targetHandle:ifaceB,
+      linkType, color: LINK_COLORS[linkType],
+    });
+  });
+
+  return { devices, connections };
+}
+
+
+/* =========================================================================
+   OFFLINE SIMULATION LOGIC (used when no AI key is configured, or as a
+   deterministic fallback the AI-generated narrative is layered on top of)
+   ========================================================================= */
+
+function findDeviceByIp(devices, ip){
+  for(const d of devices){
+    for(const iface of d.interfaces){
+      if(iface.ipAddress === ip) return { device:d, iface };
+    }
+  }
+  return null;
+}
+
+function simulatePing(devices, connections, sourceId, destIp){
+  const source = devices.find(d=>d.id===sourceId);
+  if(!source) return 'Invalid source device.';
+  const hit = findDeviceByIp(devices, destIp);
+  const header = `Sending 5, 100-byte ICMP Echos to ${destIp}, timeout is 2 seconds:`;
+
+  if(!hit){
+    return `${header}\n.....\nSuccess rate is 0 percent (0/5)\n% Destination unreachable: no device on the network owns ${destIp}.`;
+  }
+  if(hit.device.id === sourceId){
+    return `${header}\n!!!!!\nSuccess rate is 100 percent (5/5), round-trip min/avg/max = 1/1/2 ms`;
+  }
+  const path = bfsPath(connections, sourceId, hit.device.id);
+  if(!path){
+    return `${header}\n.....\nSuccess rate is 0 percent (0/5)\n% No physical path exists between ${source.label} and ${hit.device.label} (${destIp}).`;
+  }
+  const hops = path.length - 1;
+  const avg = Math.max(1, hops) * 2;
+  return `${header}\n!!!!!\nSuccess rate is 100 percent (5/5), round-trip min/avg/max = ${avg-1}/${avg}/${avg+2} ms`;
+}
+
+function simulateTraceroute(devices, connections, sourceId, destIp){
+  const source = devices.find(d=>d.id===sourceId);
+  if(!source) return 'Invalid source device.';
+  const hit = findDeviceByIp(devices, destIp);
+  let lines = [`Tracing the route to ${destIp}`, ''];
+
+  if(!hit){
+    lines.push('  1  *  *  *  Request timed out.');
+    lines.push('% Destination unreachable.');
+    return lines.join('\n');
+  }
+  const path = bfsPath(connections, sourceId, hit.device.id);
+  if(!path){
+    lines.push('  1  *  *  *  Request timed out.');
+    lines.push(`% No physical path exists between ${source.label} and ${hit.device.label}.`);
+    return lines.join('\n');
+  }
+  path.slice(1).forEach((devId, idx)=>{
+    const dev = devices.find(d=>d.id===devId);
+    const iface = dev && dev.interfaces.find(i=>i.ipAddress);
+    const ip = iface ? iface.ipAddress : `(${dev ? dev.label : devId} — no IP set)`;
+    const t = 1 + idx;
+    lines.push(`  ${idx+1}  ${ip}  ${t} msec  ${t} msec  ${t+1} msec`);
+  });
+  return lines.join('\n');
+}
+
+function simulateShowIpRoute(device){
+  const lines = ['Codes: C - connected, S - static, R - RIP, O - OSPF, D - EIGRP', ''];
+  const withIp = device.interfaces.filter(i=>i.ipAddress && i.subnetMask);
+  if(withIp.length===0){ lines.push('% No routes — no interfaces have IP addresses configured.'); return lines.join('\n'); }
+  withIp.forEach(i=>{
+    const net = networkOf(i.ipAddress, i.subnetMask);
+    const netStr = net===null ? i.ipAddress : [24,16,8,0].map(s=>(net>>>s)&255).join('.');
+    lines.push(`C    ${netStr}/${maskToCidr(i.subnetMask)} is directly connected, ${i.name}`);
+  });
+  return lines.join('\n');
+}
+
+function maskToCidr(mask){
+  const mi = ipToInt(mask);
+  if(mi===null) return 24;
+  let count = 0, m = mi >>> 0;
+  for(let b=31;b>=0;b--){ if((m >> b) & 1) count++; }
+  return count;
+}
+
+function simulateShowInterfaces(device){
+  if(device.interfaces.length===0) return '% No interfaces configured on this device.';
+  return device.interfaces.map(i=>{
+    const status = i.status === 'up' ? 'up, line protocol is up' : 'administratively down, line protocol is down';
+    const ip = i.ipAddress ? `Internet address is ${i.ipAddress}/${maskToCidr(i.subnetMask||'255.255.255.0')}` : 'no IP address set';
+    return `${i.name} is ${status}\n  ${ip}`;
+  }).join('\n');
+}
+
+function simulateShowVlanBrief(device){
+  if(device.type !== 'switch') return '% This command is only meaningful on switches.';
+  const vlans = (device.vlans && device.vlans.length) ? device.vlans : [{ id:1, name:'default' }];
+  const lines = ['VLAN Name                             Status    Ports', '---- -------------------------------- --------- -------------------------------'];
+  vlans.forEach(v=>{
+    const ports = device.interfaces.map(i=>i.name.replace('FastEthernet','Fa').replace('GigabitEthernet','Gi')).join(', ') || '—';
+    lines.push(`${String(v.id).padEnd(4)} ${String(v.name).padEnd(34)} active    ${ports}`);
+  });
+  return lines.join('\n');
+}
+
+
+/* =========================================================================
+   TOAST
+   ========================================================================= */
+
+function ToastStack({ toasts, onDismiss }){
+  return (
+    <div className="fixed top-16 right-4 z-[100] flex flex-col gap-2 w-80">
+      {toasts.map(t=>(
+        <div key={t.id} className={`toast-anim font-mono text-sm rounded-lg border px-3 py-2.5 shadow-lg backdrop-blur flex items-start gap-2
+          ${t.type==='error' ? 'bg-[#2a1418] border-[#ef4444]/50 text-[#fca5a5]'
+            : t.type==='success' ? 'bg-[#10261d] border-[#10b981]/50 text-[#86efac]'
+            : 'bg-[#1a2235] border-[#1e3a5f] text-[#f1f5f9]'}`}>
+          <Icon name={t.type==='error' ? 'alert' : t.type==='success' ? 'checkCircle' : 'sparkles'} size={15} className="mt-0.5 shrink-0" />
+          <span className="flex-1 leading-snug">{t.message}</span>
+          <button onClick={()=>onDismiss(t.id)} className="text-[#475569] hover:text-[#f1f5f9] shrink-0"><Icon name="x" size={13}/></button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* =========================================================================
+   CONTEXT MENU
+   ========================================================================= */
+
+function ContextMenu({ menu, onClose, items }){
+  const ref = useRef(null);
+  useEffect(()=>{
+    function handler(e){ if(ref.current && !ref.current.contains(e.target)) onClose(); }
+    window.addEventListener('mousedown', handler);
+    return ()=>window.removeEventListener('mousedown', handler);
+  },[onClose]);
+  if(!menu) return null;
+  return (
+    <div ref={ref} style={{ left:menu.x, top:menu.y }}
+      className="fixed z-[90] min-w-[190px] bg-[#1a2235] border border-[#1e3a5f] rounded-lg shadow-2xl py-1.5 font-mono text-[13px] overflow-hidden">
+      {items.map((item,idx)=> item.divider ? (
+        <div key={idx} className="h-px bg-[#1e3a5f] my-1 mx-2" />
+      ) : (
+        <button key={idx} disabled={item.disabled}
+          onClick={()=>{ if(!item.disabled){ item.onClick(); onClose(); } }}
+          className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-left transition-colors
+            ${item.disabled ? 'text-[#475569] cursor-not-allowed' : item.danger ? 'text-[#fca5a5] hover:bg-[#2a1418]' : 'text-[#e2e8f0] hover:bg-[#212c45]'}`}>
+          {item.icon && <Icon name={item.icon} size={13.5} />}
+          <span>{item.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* =========================================================================
+   DEVICE PALETTE  (left panel)
+   ========================================================================= */
+
+function DevicePalette({ onAddDevice, onClearAll, onAutoLayout, onZoomFit }){
+  const items = [
+    { type:'router', icon:'router', desc:'L3 routing device' },
+    { type:'switch', icon:'switch', desc:'L2 switching device' },
+    { type:'pc', icon:'pc', desc:'End-user workstation' },
+    { type:'server', icon:'server', desc:'Server / host' },
+    { type:'firewall', icon:'firewall', desc:'Security appliance' },
+    { type:'cloud', icon:'cloud', desc:'WAN / Internet' },
+  ];
+  return (
+    <div className="w-[240px] shrink-0 bg-[#111827] border-r border-[#1e3a5f] flex flex-col overflow-y-auto">
+      <div className="px-4 pt-4 pb-2">
+        <h3 className="font-display text-[11px] tracking-widest text-[#475569] uppercase mb-3">Device Palette</h3>
+        <div className="grid grid-cols-2 gap-2">
+          {items.map(it=>{
+            const meta = DEVICE_TYPES[it.type];
+            return (
+              <div key={it.type}
+                draggable
+                onDragStart={(e)=>{ e.dataTransfer.setData('text/netsim-device', it.type); e.dataTransfer.effectAllowed='copy'; }}
+                onClick={()=>onAddDevice(it.type, null)}
+                title={`Drag onto canvas, or click to add — ${it.desc}`}
+                className={`group cursor-grab active:cursor-grabbing select-none flex flex-col items-center gap-1.5 rounded-lg border border-[#1e3a5f] bg-[#1a2235] py-3 hover:border-[${meta.color}] hover:bg-[#1e2840] transition-colors`}
+                style={{ borderColor: undefined }}
+              >
+                <div className={`w-9 h-9 rounded-md flex items-center justify-center node-glow-${meta.glow}`} style={{ color: meta.color, background:'#0d1320' }}>
+                  <Icon name={it.icon} size={18} />
+                </div>
+                <span className="font-mono text-[11px] text-[#cbd5e1] group-hover:text-white">{meta.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="h-px bg-[#1e3a5f] mx-4 my-3" />
+
+      <div className="px-4 pb-4">
+        <h3 className="font-display text-[11px] tracking-widest text-[#475569] uppercase mb-3">Quick Actions</h3>
+        <div className="flex flex-col gap-1.5">
+          <button onClick={onAutoLayout} className="flex items-center gap-2 px-2.5 py-2 rounded-md text-[12px] font-mono text-[#cbd5e1] hover:bg-[#1a2235] hover:text-white transition-colors text-left">
+            <Icon name="layout" size={14}/> Auto Layout
+          </button>
+          <button onClick={onZoomFit} className="flex items-center gap-2 px-2.5 py-2 rounded-md text-[12px] font-mono text-[#cbd5e1] hover:bg-[#1a2235] hover:text-white transition-colors text-left">
+            <Icon name="maximize" size={14}/> Zoom to Fit
+          </button>
+          <button onClick={onClearAll} className="flex items-center gap-2 px-2.5 py-2 rounded-md text-[12px] font-mono text-[#fca5a5] hover:bg-[#2a1418] transition-colors text-left">
+            <Icon name="trash" size={14}/> Clear All
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-auto px-4 py-3 border-t border-[#1e3a5f]">
+        <p className="font-mono text-[10px] text-[#475569] leading-relaxed">
+          Drag a device onto the canvas, or click it to drop at the center.
+          Drag from a node's <span className="text-[#94a3b8]">connect handle</span> to another node to link them.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================================
+   DEVICE NODE
+   ========================================================================= */
+
+const DeviceNode = React.memo(function DeviceNode({ device, selected, onMouseDownBody, onMouseDownHandle, onClick, onDoubleClick, onContextMenu, renaming, onRenameCommit, onRenameCancel, isConnectError }){
+  const meta = DEVICE_TYPES[device.type];
+  const [tempLabel, setTempLabel] = useState(device.label);
+  useEffect(()=>{ setTempLabel(device.label); }, [renaming]);
+  const configured = !!(device.config && device.config.trim().length > 0);
+
+  return (
+    <div
+      className="absolute select-none"
+      style={{ left: device.position.x, top: device.position.y, width: NODE_W, transform:'translate(-50%,-50%)' }}
+      onMouseDown={onMouseDownBody}
+      onClick={onClick}
+      onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
+    >
+      <div className={`relative flex flex-col items-center gap-1 cursor-grab active:cursor-grabbing
+        ${selected ? 'node-selected' : `node-glow-${meta.glow}`} rounded-xl bg-[#1a2235] border border-[#1e3a5f]/80 py-2.5 px-2`}>
+
+        {configured && (
+          <div className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[#10b981] flex items-center justify-center ring-2 ring-[#0a0e1a]">
+            <Icon name="check" size={9} className="text-[#0a0e1a]" strokeWidth={3} />
+          </div>
+        )}
+        {isConnectError && (
+          <div className="absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full bg-[#ef4444] flex items-center justify-center ring-2 ring-[#0a0e1a]">
+            <Icon name="alert" size={9} className="text-[#0a0e1a]" strokeWidth={3} />
+          </div>
+        )}
+
+        <div className="w-9 h-9 rounded-md flex items-center justify-center" style={{ color: meta.color, background:'#0d1320' }}>
+          <Icon name={meta.glow} size={18} />
+        </div>
+
+        {renaming ? (
+          <input
+            autoFocus
+            value={tempLabel}
+            onChange={e=>setTempLabel(e.target.value)}
+            onMouseDown={e=>e.stopPropagation()}
+            onClick={e=>e.stopPropagation()}
+            onKeyDown={e=>{
+              if(e.key==='Enter') onRenameCommit(tempLabel || device.label);
+              if(e.key==='Escape') onRenameCancel();
+            }}
+            onBlur={()=>onRenameCommit(tempLabel || device.label)}
+            className="w-full text-center font-mono text-[11px] bg-[#0d1320] border border-[#3b82f6] rounded px-1 py-0.5 text-white"
+          />
+        ) : (
+          <span className="font-mono text-[11px] text-[#e2e8f0] font-medium tracking-tight">{device.label}</span>
+        )}
+
+        {/* connect handle */}
+        <div
+          onMouseDown={(e)=>{ e.stopPropagation(); onMouseDownHandle(e); }}
+          title="Drag to another device to connect"
+          className="absolute -bottom-2 -right-2 w-4 h-4 rounded-full bg-[#0d1320] border-2 border-[#3b82f6] hover:scale-125 hover:bg-[#3b82f6] transition-transform cursor-crosshair"
+        />
+      </div>
+    </div>
+  );
+});
+
+/* =========================================================================
+   CONNECTION (edge) LINE
+   ========================================================================= */
+
+function ConnectionLine({ conn, fromPos, toPos, onContextMenu, onClick, selected }){
+  const dx = toPos.x - fromPos.x, dy = toPos.y - fromPos.y;
+  const dist = Math.max(1, Math.hypot(dx, dy));
+  const ux = dx/dist, uy = dy/dist;
+  const x1 = fromPos.x + ux*NODE_RADIUS*0.55, y1 = fromPos.y + uy*NODE_RADIUS*0.55;
+  const x2 = toPos.x - ux*NODE_RADIUS*0.55, y2 = toPos.y - uy*NODE_RADIUS*0.55;
+  const midX = (x1+x2)/2, midY = (y1+y2)/2;
+  const dashed = conn.linkType === 'trunk' || conn.linkType === 'fiber';
+
+  return (
+    <g onContextMenu={onContextMenu} onClick={onClick} style={{ cursor:'pointer' }}>
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={14} />
+      <line x1={x1} y1={y1} x2={x2} y2={y2}
+        stroke={selected ? '#f1f5f9' : conn.color}
+        strokeWidth={selected ? 3 : 2}
+        className={dashed ? 'flow-dash' : ''}
+        strokeDasharray={dashed ? '5 4' : undefined}
+      />
+      <circle cx={x1} cy={y1} r={2.5} fill={conn.color} />
+      <circle cx={x2} cy={y2} r={2.5} fill={conn.color} />
+      <g transform={`translate(${midX},${midY})`}>
+        <rect x={-26} y={-8} width={52} height={16} rx={4} fill="#0a0e1a" stroke={conn.color} strokeWidth={0.75} opacity={0.92} />
+        <text x={0} y={3.5} textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontSize={8.5} fill={conn.color}>{conn.linkType}</text>
+      </g>
+    </g>
+  );
+}
+
+
+/* =========================================================================
+   CANVAS
+   ========================================================================= */
+
+function Canvas({
+  devices, connections, selectedId, onSelect, onMoveDevice, onMoveDeviceEnd,
+  onConnect, onDeleteConnection, onContextMenuCanvas, onContextMenuDevice, onContextMenuEdge,
+  onRenameDevice, viewRef, welcomeToast,
+}){
+  const containerRef = useRef(null);
+  const [view, setView] = useState({ scale:0.85, x:80, y:40 });
+  const interactionRef = useRef({ mode:'none' }); // 'none' | 'pan' | 'drag' | 'connect'
+  const [renamingId, setRenamingId] = useState(null);
+  const [connectPreview, setConnectPreview] = useState(null); // {from:{x,y}, to:{x,y}}
+  const [selectedEdgeId, setSelectedEdgeId] = useState(null);
+
+  // expose a couple of helpers to parent (zoom to fit / reset)
+  useEffect(()=>{
+    if(!viewRef) return;
+    viewRef.current = {
+      zoomToFit: ()=>{
+        if(devices.length===0){ setView({ scale:0.85, x:80, y:40 }); return; }
+        const xs = devices.map(d=>d.position.x), ys = devices.map(d=>d.position.y);
+        const minX = Math.min(...xs)-100, maxX = Math.max(...xs)+100;
+        const minY = Math.min(...ys)-100, maxY = Math.max(...ys)+100;
+        const rect = containerRef.current.getBoundingClientRect();
+        const scaleX = rect.width/(maxX-minX), scaleY = rect.height/(maxY-minY);
+        const scale = clamp(Math.min(scaleX, scaleY), 0.25, 1.4);
+        setView({ scale, x: rect.width/2 - ((minX+maxX)/2)*scale, y: rect.height/2 - ((minY+maxY)/2)*scale });
+      },
+    };
+  }, [viewRef, devices]);
+
+  const screenToWorld = useCallback((clientX, clientY)=>{
+    const rect = containerRef.current.getBoundingClientRect();
+    const sx = clientX - rect.left, sy = clientY - rect.top;
+    return { x: (sx - view.x)/view.scale, y: (sy - view.y)/view.scale };
+  }, [view]);
+
+  const handleWheel = useCallback((e)=>{
+    e.preventDefault();
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left, mouseY = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.08 : 0.93;
+    setView(v=>{
+      const newScale = clamp(v.scale*factor, 0.25, 2.5);
+      const ratio = newScale/v.scale;
+      return { scale:newScale, x: mouseX - (mouseX - v.x)*ratio, y: mouseY - (mouseY - v.y)*ratio };
+    });
+  }, []);
+
+  useEffect(()=>{
+    const el = containerRef.current;
+    if(!el) return;
+    el.addEventListener('wheel', handleWheel, { passive:false });
+    return ()=>el.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
+  // ---- canvas-level mouse handlers (pan + drop target for connect/drag) ----
+  const onCanvasMouseDown = (e)=>{
+    if(e.button !== 0) return;
+    // clicked empty canvas: start panning, deselect
+    interactionRef.current = { mode:'pan', startX:e.clientX, startY:e.clientY, viewStart:{...view} };
+    onSelect(null);
+    setSelectedEdgeId(null);
+  };
+
+  const onCanvasMouseMove = (e)=>{
+    const mode = interactionRef.current.mode;
+    if(mode === 'pan'){
+      const { startX, startY, viewStart } = interactionRef.current;
+      setView({ ...viewStart, x: viewStart.x + (e.clientX-startX), y: viewStart.y + (e.clientY-startY) });
+    } else if(mode === 'drag'){
+      const { id, offsetX, offsetY } = interactionRef.current;
+      const world = screenToWorld(e.clientX, e.clientY);
+      interactionRef.current.moved = true;
+      onMoveDevice(id, { x: world.x - offsetX, y: world.y - offsetY });
+    } else if(mode === 'connect'){
+      const world = screenToWorld(e.clientX, e.clientY);
+      setConnectPreview(p=> p ? { ...p, to: world } : p);
+    }
+  };
+
+  const onCanvasMouseUp = (e)=>{
+    const mode = interactionRef.current.mode;
+    if(mode === 'drag'){
+      onMoveDeviceEnd && onMoveDeviceEnd(interactionRef.current.id, !!interactionRef.current.moved);
+    }
+    if(mode === 'connect'){
+      setConnectPreview(null);
+    }
+    interactionRef.current = { mode:'none' };
+  };
+
+  useEffect(()=>{
+    window.addEventListener('mouseup', onCanvasMouseUp);
+    window.addEventListener('mousemove', onCanvasMouseMove);
+    return ()=>{
+      window.removeEventListener('mouseup', onCanvasMouseUp);
+      window.removeEventListener('mousemove', onCanvasMouseMove);
+    };
+  });
+
+  const startDeviceDrag = (device, e)=>{
+    if(e.button !== 0) return;
+    e.stopPropagation();
+    const world = screenToWorld(e.clientX, e.clientY);
+    interactionRef.current = {
+      mode:'drag', id:device.id,
+      offsetX: world.x - device.position.x,
+      offsetY: world.y - device.position.y,
+      moved:false,
+    };
+  };
+
+  const startConnectDrag = (device, e)=>{
+    const world = screenToWorld(e.clientX, e.clientY);
+    interactionRef.current = { mode:'connect', fromId:device.id };
+    setConnectPreview({ from:{ x:device.position.x, y:device.position.y }, to:world, fromId:device.id });
+  };
+
+  const finishConnectOnDevice = (targetDevice, e)=>{
+    if(interactionRef.current.mode === 'connect'){
+      const fromId = interactionRef.current.fromId;
+      if(fromId && fromId !== targetDevice.id){
+        onConnect(fromId, targetDevice.id);
+      }
+      interactionRef.current = { mode:'none' };
+      setConnectPreview(null);
+      e.stopPropagation();
+    }
+  };
+
+  const devById = useMemo(()=>Object.fromEntries(devices.map(d=>[d.id,d])), [devices]);
+
+  // drag & drop from palette
+  const onDrop = (e)=>{
+    e.preventDefault();
+    const type = e.dataTransfer.getData('text/netsim-device');
+    if(!type) return;
+    const world = screenToWorld(e.clientX, e.clientY);
+    onContextMenuCanvas.addDeviceAt(type, world);
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative flex-1 overflow-hidden dot-grid cursor-default"
+      onMouseDown={onCanvasMouseDown}
+      onContextMenu={(e)=>{ e.preventDefault(); const world = screenToWorld(e.clientX, e.clientY); onContextMenuCanvas.open(e.clientX, e.clientY, world); }}
+      onDrop={onDrop}
+      onDragOver={(e)=>e.preventDefault()}
+    >
+      {welcomeToast}
+
+      <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex:1 }}>
+        <g transform={`translate(${view.x},${view.y}) scale(${view.scale})`} style={{ pointerEvents:'auto' }}>
+          {connections.map(conn=>{
+            const a = devById[conn.source], b = devById[conn.target];
+            if(!a || !b) return null;
+            return (
+              <ConnectionLine key={conn.id} conn={conn} fromPos={a.position} toPos={b.position}
+                selected={selectedEdgeId===conn.id}
+                onClick={(e)=>{ e.stopPropagation(); setSelectedEdgeId(conn.id); onSelect(null); }}
+                onContextMenu={(e)=>{ e.preventDefault(); e.stopPropagation(); onContextMenuEdge(conn, e.clientX, e.clientY); }}
+              />
+            );
+          })}
+          {connectPreview && (
+            <line x1={connectPreview.from.x} y1={connectPreview.from.y} x2={connectPreview.to.x} y2={connectPreview.to.y}
+              stroke="#3b82f6" strokeWidth={2} strokeDasharray="6 4" />
+          )}
+        </g>
+      </svg>
+
+      <div className="absolute inset-0" style={{ zIndex:2, transform:`translate(${view.x}px,${view.y}px) scale(${view.scale})`, transformOrigin:'0 0' }}>
+        {devices.map(device=>(
+          <DeviceNode
+            key={device.id}
+            device={device}
+            selected={selectedId===device.id}
+            renaming={renamingId===device.id}
+            onMouseDownBody={(e)=>startDeviceDrag(device, e)}
+            onMouseDownHandle={(e)=>startConnectDrag(device, e)}
+            onClick={(e)=>{
+              e.stopPropagation();
+              if(interactionRef.current.mode==='drag' && interactionRef.current.moved) return;
+              onSelect(device.id);
+              setSelectedEdgeId(null);
+            }}
+            onDoubleClick={(e)=>{ e.stopPropagation(); setRenamingId(device.id); }}
+            onContextMenu={(e)=>{ e.preventDefault(); e.stopPropagation(); onContextMenuDevice(device, e.clientX, e.clientY); }}
+            onRenameCommit={(label)=>{ onRenameDevice(device.id, label); setRenamingId(null); }}
+            onRenameCancel={()=>setRenamingId(null)}
+          />
+        ))}
+      </div>
+
+      {/* invisible mouseup-catchers layered on devices for connect-completion */}
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex:3, transform:`translate(${view.x}px,${view.y}px) scale(${view.scale})`, transformOrigin:'0 0' }}>
+        {connectPreview && devices.map(device=>(
+          <div key={device.id}
+            className="absolute pointer-events-auto"
+            style={{ left:device.position.x-NODE_W/2, top:device.position.y-NODE_H/2, width:NODE_W, height:NODE_H }}
+            onMouseUp={(e)=>finishConnectOnDevice(device, e)}
+          />
+        ))}
+      </div>
+
+      {/* zoom indicator */}
+      <div className="absolute bottom-3 right-3 z-20 font-mono text-[11px] text-[#475569] bg-[#111827]/80 border border-[#1e3a5f] rounded px-2 py-1 backdrop-blur">
+        {Math.round(view.scale*100)}%
+      </div>
+      {devices.length===0 && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+          <div className="text-center font-mono text-[#334155]">
+            <Icon name="router" size={40} className="mx-auto mb-3 opacity-40" />
+            <p className="text-sm">Drag a device from the left palette to begin</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* =========================================================================
+   API SETTINGS MODAL
+   ========================================================================= */
+
+function ApiSettingsModal({ open, onClose, settings, onSave }){
+  const [draft, setDraft] = useState(settings);
+  const [showKey, setShowKey] = useState(false);
+  const [testState, setTestState] = useState(null); // null | 'loading' | {ok,msg}
+
+  useEffect(()=>{ if(open) setDraft(settings); setTestState(null); }, [open, settings]);
+
+  if(!open) return null;
+  const providerMeta = PROVIDERS[draft.provider];
+
+  const testConnection = async ()=>{
+    setTestState('loading');
+    const res = await callAI(draft, [{ role:'user', content:'Hello' }], 'Reply with the single word: OK');
+    setTestState(res.ok ? { ok:true, msg:'Connection successful.' } : { ok:false, msg:res.error });
+  };
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onMouseDown={onClose}>
+      <div onMouseDown={e=>e.stopPropagation()} className="w-[440px] max-w-[92vw] bg-[#111827] border border-[#1e3a5f] rounded-xl shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#1e3a5f]">
+          <h2 className="font-display text-sm font-semibold flex items-center gap-2"><Icon name="key" size={15} className="text-[#3b82f6]"/> API Settings</h2>
+          <button onClick={onClose} className="text-[#475569] hover:text-white"><Icon name="x" size={16}/></button>
+        </div>
+
+        <div className="px-5 py-4 flex flex-col gap-4 max-h-[70vh] overflow-y-auto">
+          <div>
+            <label className="block font-mono text-[11px] text-[#94a3b8] mb-1.5 uppercase tracking-wide">Provider</label>
+            <select
+              value={draft.provider}
+              onChange={e=>setDraft(d=>({ ...d, provider:e.target.value, model:PROVIDERS[e.target.value].models[0] || '' }))}
+              className="w-full bg-[#1a2235] border border-[#1e3a5f] rounded-md px-3 py-2 text-sm font-mono focus:border-[#3b82f6]">
+              {Object.entries(PROVIDERS).map(([key,p])=>(<option key={key} value={key}>{p.label}</option>))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block font-mono text-[11px] text-[#94a3b8] mb-1.5 uppercase tracking-wide">API Key</label>
+            <div className="relative">
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={draft.apiKey}
+                onChange={e=>setDraft(d=>({ ...d, apiKey:e.target.value }))}
+                placeholder={draft.provider==='anthropic' ? 'sk-ant-...' : 'sk-...'}
+                className="w-full bg-[#1a2235] border border-[#1e3a5f] rounded-md px-3 py-2 pr-9 text-sm font-mono focus:border-[#3b82f6]" />
+              <button type="button" onClick={()=>setShowKey(s=>!s)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#475569] hover:text-white">
+                <Icon name={showKey ? 'eyeOff' : 'eye'} size={15}/>
+              </button>
+            </div>
+            <p className="font-mono text-[10px] text-[#475569] mt-1.5">Stored only in memory for this session — never written to disk or localStorage.</p>
+          </div>
+
+          {providerMeta.needsBaseUrl && (
+            <div>
+              <label className="block font-mono text-[11px] text-[#94a3b8] mb-1.5 uppercase tracking-wide">Base URL</label>
+              <input
+                value={draft.baseUrl}
+                onChange={e=>setDraft(d=>({ ...d, baseUrl:e.target.value }))}
+                placeholder="https://your-endpoint.example.com/v1"
+                className="w-full bg-[#1a2235] border border-[#1e3a5f] rounded-md px-3 py-2 text-sm font-mono focus:border-[#3b82f6]" />
+            </div>
+          )}
+
+          <div>
+            <label className="block font-mono text-[11px] text-[#94a3b8] mb-1.5 uppercase tracking-wide">Model</label>
+            {providerMeta.models.length > 0 ? (
+              <select
+                value={draft.model}
+                onChange={e=>setDraft(d=>({ ...d, model:e.target.value }))}
+                className="w-full bg-[#1a2235] border border-[#1e3a5f] rounded-md px-3 py-2 text-sm font-mono focus:border-[#3b82f6]">
+                {providerMeta.models.map(m=>(<option key={m} value={m}>{m}</option>))}
+              </select>
+            ) : (
+              <input
+                value={draft.model}
+                onChange={e=>setDraft(d=>({ ...d, model:e.target.value }))}
+                placeholder="model-name"
+                className="w-full bg-[#1a2235] border border-[#1e3a5f] rounded-md px-3 py-2 text-sm font-mono focus:border-[#3b82f6]" />
+            )}
+          </div>
+
+          <button onClick={testConnection} disabled={testState==='loading'}
+            className="flex items-center justify-center gap-2 w-full py-2 rounded-md border border-[#1e3a5f] text-sm font-mono text-[#cbd5e1] hover:bg-[#1a2235] transition-colors disabled:opacity-60">
+            {testState==='loading' ? <Icon name="loader" size={14}/> : <Icon name="zap" size={14}/>}
+            Test Connection
+          </button>
+          {testState && testState!=='loading' && (
+            <div className={`flex items-start gap-2 rounded-md px-3 py-2 text-[12px] font-mono ${testState.ok ? 'bg-[#10261d] text-[#86efac] border border-[#10b981]/40' : 'bg-[#2a1418] text-[#fca5a5] border border-[#ef4444]/40'}`}>
+              <Icon name={testState.ok ? 'checkCircle' : 'alert'} size={14} className="mt-0.5 shrink-0"/>
+              <span>{testState.msg}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-[#1e3a5f]">
+          <button onClick={onClose} className="px-3.5 py-1.5 rounded-md text-sm font-mono text-[#94a3b8] hover:text-white">Cancel</button>
+          <button onClick={()=>{ onSave(draft); onClose(); }} className="px-3.5 py-1.5 rounded-md text-sm font-mono bg-[#3b82f6] text-white hover:bg-[#2563eb]">Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================================
+   CLI SYNTAX HIGHLIGHTING (lightweight, regex-based)
+   ========================================================================= */
+
+const CLI_KEYWORDS = ['enable','configure','terminal','conf','t','interface','ip','address','no','shutdown',
+  'hostname','router','ospf','eigrp','rip','network','area','version','vlan','switchport','mode','access','trunk',
+  'encapsulation','dot1q','line','console','vty','password','login','banner','motd','do','write','memory','exit','end',
+  'description','clock','rate','bandwidth','duplex','speed','spanning-tree','channel-group','crypto','class-map','policy-map'];
+
+function escapeHtml(s){
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function highlightCli(text){
+  if(!text) return '';
+  const lines = escapeHtml(text).split('\n');
+  return lines.map(line=>{
+    if(/^\s*!/.test(line)) return `<span style="color:#475569">${line}</span>`;
+    let out = line.replace(/\b([A-Za-z\-]+)\b/g, (m)=>{
+      return CLI_KEYWORDS.includes(m.toLowerCase()) ? `<span style="color:#34d399;font-weight:600">${m}</span>` : m;
+    });
+    out = out.replace(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/g, '<span style="color:#60a5fa">$1</span>');
+    return out;
+  }).join('\n');
+}
+
+/* =========================================================================
+   DEVICE CONFIG PANEL
+   ========================================================================= */
+
+function DeviceConfigPanel({ device, onUpdateDevice, onDeleteInterface, onAddInterface, onImproveWithAI, aiBusy }){
+  const [tab, setTab] = useState('overview');
+  const preRef = useRef(null), taRef = useRef(null);
+
+  if(!device) return (
+    <div className="flex-1 flex items-center justify-center text-center px-6">
+      <div className="font-mono text-[#334155]">
+        <Icon name="router" size={28} className="mx-auto mb-2 opacity-50" />
+        <p className="text-xs">Select a device on the canvas to view its configuration</p>
+      </div>
+    </div>
+  );
+
+  const meta = DEVICE_TYPES[device.type];
+  const syncScroll = ()=>{ if(preRef.current && taRef.current){ preRef.current.scrollTop = taRef.current.scrollTop; preRef.current.scrollLeft = taRef.current.scrollLeft; } };
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 border-t border-[#1e3a5f]">
+      <div className="flex items-center gap-2 px-4 pt-3 pb-2">
+        <div className="w-7 h-7 rounded flex items-center justify-center shrink-0" style={{ color:meta.color, background:'#0d1320' }}>
+          <Icon name={meta.glow} size={14}/>
+        </div>
+        <div className="min-w-0">
+          <div className="font-mono text-[12.5px] text-white font-medium truncate">{device.label}</div>
+          <div className="font-mono text-[10px] text-[#64748b]">{meta.label}</div>
+        </div>
+      </div>
+
+      <div className="flex gap-1 px-4 border-b border-[#1e3a5f]">
+        {[['overview','Overview'],['cli','CLI Config'],['notes','Notes']].map(([key,label])=>(
+          <button key={key} onClick={()=>setTab(key)}
+            className={`font-mono text-[11px] px-3 py-2 border-b-2 -mb-px transition-colors ${tab===key ? 'border-[#3b82f6] text-white' : 'border-transparent text-[#64748b] hover:text-[#cbd5e1]'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 py-3 min-h-0">
+        {tab==='overview' && (
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className="block font-mono text-[10px] text-[#64748b] uppercase tracking-wide mb-1">Device Name</label>
+              <input value={device.label} onChange={e=>onUpdateDevice({ label:e.target.value })}
+                className="w-full bg-[#1a2235] border border-[#1e3a5f] rounded px-2.5 py-1.5 text-[12.5px] font-mono focus:border-[#3b82f6]" />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block font-mono text-[10px] text-[#64748b] uppercase tracking-wide">Interfaces</label>
+                <button onClick={onAddInterface} className="flex items-center gap-1 text-[10px] font-mono text-[#60a5fa] hover:text-[#93c5fd]">
+                  <Icon name="plus" size={11}/> Add
+                </button>
+              </div>
+              {device.interfaces.length===0 && <p className="font-mono text-[11px] text-[#475569] italic">No interfaces yet — connect this device or add one manually.</p>}
+              <div className="flex flex-col gap-1.5">
+                {device.interfaces.map((iface, idx)=>(
+                  <div key={iface.name} className="bg-[#1a2235] border border-[#1e3a5f] rounded-md p-2">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-mono text-[11px] text-[#e2e8f0] font-medium">{iface.name}</span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={()=>{
+                            const next = [...device.interfaces];
+                            next[idx] = { ...iface, status: iface.status==='up' ? 'down' : 'up' };
+                            onUpdateDevice({ interfaces: next });
+                          }}
+                          className={`flex items-center gap-1 text-[9.5px] font-mono px-1.5 py-0.5 rounded ${iface.status==='up' ? 'bg-[#10261d] text-[#86efac]' : 'bg-[#2a1418] text-[#fca5a5]'}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${iface.status==='up' ? 'bg-[#10b981] pulse-dot' : 'bg-[#ef4444]'}`}></span>
+                          {iface.status === 'up' ? 'Up' : 'Down'}
+                        </button>
+                        <button onClick={()=>onDeleteInterface(iface.name)} className="text-[#475569] hover:text-[#fca5a5]"><Icon name="trash" size={11}/></button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <input placeholder="IP address" value={iface.ipAddress}
+                        onChange={e=>{
+                          const next = [...device.interfaces]; next[idx] = { ...iface, ipAddress:e.target.value }; onUpdateDevice({ interfaces: next });
+                        }}
+                        className="bg-[#0d1320] border border-[#1e3a5f] rounded px-1.5 py-1 text-[10.5px] font-mono focus:border-[#3b82f6]" />
+                      <input placeholder="Subnet mask" value={iface.subnetMask}
+                        onChange={e=>{
+                          const next = [...device.interfaces]; next[idx] = { ...iface, subnetMask:e.target.value }; onUpdateDevice({ interfaces: next });
+                        }}
+                        className="bg-[#0d1320] border border-[#1e3a5f] rounded px-1.5 py-1 text-[10.5px] font-mono focus:border-[#3b82f6]" />
+                    </div>
+                    {iface.connectedTo && <p className="font-mono text-[9.5px] text-[#475569] mt-1 truncate">↳ linked</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab==='cli' && (
+          <div className="flex flex-col h-full gap-2">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={()=>navigator.clipboard && navigator.clipboard.writeText(device.config || '')}
+                className="flex items-center gap-1.5 text-[11px] font-mono px-2.5 py-1.5 rounded-md border border-[#1e3a5f] text-[#cbd5e1] hover:bg-[#1a2235]">
+                <Icon name="copy" size={12}/> Copy
+              </button>
+              <button
+                onClick={onImproveWithAI}
+                disabled={aiBusy}
+                className="flex items-center gap-1.5 text-[11px] font-mono px-2.5 py-1.5 rounded-md border border-[#3b82f6]/40 text-[#93c5fd] hover:bg-[#1a2235] disabled:opacity-50">
+                {aiBusy ? <Icon name="loader" size={12}/> : <Icon name="sparkles" size={12}/>} Improve with AI
+              </button>
+            </div>
+            <div className="relative flex-1 min-h-[220px] rounded-md border border-[#1e3a5f] bg-[#0d1320] overflow-hidden">
+              <pre ref={preRef} className="absolute inset-0 m-0 p-3 font-mono text-[12px] leading-[1.6] whitespace-pre-wrap break-words pointer-events-none overflow-auto text-[#cbd5e1]"
+                dangerouslySetInnerHTML={{ __html: highlightCli(device.config || '! No configuration yet — ask the AI assistant or type CLI manually.') + ' ' }} />
+              <textarea
+                ref={taRef}
+                value={device.config}
+                onChange={e=>onUpdateDevice({ config:e.target.value })}
+                onScroll={syncScroll}
+                spellCheck={false}
+                placeholder=""
+                className="absolute inset-0 w-full h-full p-3 font-mono text-[12px] leading-[1.6] bg-transparent text-transparent caret-white resize-none whitespace-pre-wrap break-words overflow-auto" />
+            </div>
+          </div>
+        )}
+
+        {tab==='notes' && (
+          <textarea
+            value={device.notes}
+            onChange={e=>onUpdateDevice({ notes:e.target.value })}
+            placeholder="Free-text notes about this device — auto-saved as you type."
+            className="w-full h-full min-h-[260px] bg-[#1a2235] border border-[#1e3a5f] rounded-md p-3 text-[12.5px] font-mono leading-relaxed focus:border-[#3b82f6] resize-none" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================================
+   AI CHAT  (renders message text, formatting fenced code blocks as <pre>)
+   ========================================================================= */
+
+function ChatMessageBody({ text }){
+  const parts = useMemo(()=>{
+    if(!text) return [{ type:'text', value:'' }];
+    const segments = [];
+    const re = /```(\w*)\n?([\s\S]*?)```/g;
+    let last = 0, m;
+    while((m = re.exec(text))){
+      if(m.index > last) segments.push({ type:'text', value:text.slice(last, m.index) });
+      segments.push({ type:'code', lang:m[1], value:m[2] });
+      last = re.lastIndex;
+    }
+    if(last < text.length) segments.push({ type:'text', value:text.slice(last) });
+    return segments;
+  }, [text]);
+
+  return (
+    <div className="flex flex-col gap-2">
+      {parts.map((p, i)=> p.type==='code' ? (
+        <pre key={i} className="bg-[#0d1320] border border-[#1e3a5f] rounded-md p-2.5 text-[11px] font-mono leading-relaxed overflow-x-auto text-[#86efac] whitespace-pre-wrap">{p.value.trim()}</pre>
+      ) : p.value.trim() ? (
+        <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{p.value.trim()}</p>
+      ) : null)}
+    </div>
+  );
+}
+
+function AIChat({ messages, onSend, busy, hasKey, onOpenSettings, suggestions }){
+  const [input, setInput] = useState('');
+  const scrollRef = useRef(null);
+
+  useEffect(()=>{
+    if(scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, busy]);
+
+  const submit = ()=>{
+    const text = input.trim();
+    if(!text || busy) return;
+    onSend(text);
+    setInput('');
+  };
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 border-b border-[#1e3a5f]">
+      <div className="flex items-center justify-between px-4 pt-3 pb-2">
+        <h3 className="font-display text-[11px] tracking-widest text-[#475569] uppercase flex items-center gap-1.5">
+          <Icon name="bot" size={13} className="text-[#3b82f6]"/> AI Assistant
+        </h3>
+        {!hasKey && (
+          <button onClick={onOpenSettings} className="text-[10px] font-mono text-[#f59e0b] hover:text-[#fbbf24] flex items-center gap-1">
+            <Icon name="key" size={10}/> Set API key
+          </button>
+        )}
+      </div>
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-2 flex flex-col gap-3 min-h-[160px] max-h-[42vh]">
+        {messages.length===0 && (
+          <div className="font-mono text-[11px] text-[#475569] leading-relaxed py-2">
+            Ask me to configure your network, explain a protocol, or debug connectivity. Try:
+            <div className="mt-2 flex flex-col gap-1.5">
+              {suggestions.map((s,i)=>(
+                <button key={i} onClick={()=>onSend(s)} className="text-left px-2.5 py-1.5 rounded-md bg-[#1a2235] border border-[#1e3a5f] hover:border-[#3b82f6]/50 text-[#93c5fd] transition-colors">
+                  "{s}"
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((msg, i)=>(
+          <div key={i} className={`flex gap-2 ${msg.role==='user' ? 'flex-row-reverse' : ''}`}>
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${msg.role==='user' ? 'bg-[#1e2840] text-[#94a3b8]' : 'bg-[#16243d] text-[#3b82f6]'}`}>
+              <Icon name={msg.role==='user' ? 'user' : 'bot'} size={12}/>
+            </div>
+            <div className={`max-w-[88%] rounded-lg px-3 py-2 ${msg.role==='user' ? 'bg-[#1e2840] text-[#e2e8f0]' : 'bg-[#16243d] text-[#e2e8f0]'} ${msg.error ? 'border border-[#ef4444]/40' : ''}`}>
+              {msg.error ? (
+                <p className="text-[12px] text-[#fca5a5] font-mono flex items-start gap-1.5"><Icon name="alert" size={13} className="mt-0.5 shrink-0"/>{msg.text}</p>
+              ) : (
+                <ChatMessageBody text={msg.text} />
+              )}
+              {msg.appliedTo && msg.appliedTo.length>0 && (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[10.5px] font-mono text-[#86efac]">
+                  <Icon name="checkCircle" size={11}/> Applied to {msg.appliedTo.join(', ')}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {busy && (
+          <div className="flex gap-2">
+            <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 bg-[#16243d] text-[#3b82f6]"><Icon name="bot" size={12}/></div>
+            <div className="rounded-lg px-3 py-2 bg-[#16243d] flex items-center gap-1.5">
+              <Icon name="loader" size={13} className="text-[#3b82f6]"/>
+              <span className="text-[11px] font-mono text-[#64748b]">Thinking…</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="px-3 pb-3 pt-1.5">
+        <div className="flex items-end gap-1.5 bg-[#1a2235] border border-[#1e3a5f] rounded-lg px-2.5 py-2 focus-within:border-[#3b82f6]">
+          <textarea
+            value={input}
+            onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); submit(); } }}
+            placeholder="Ask the AI to configure, explain, or debug your network…"
+            rows={1}
+            className="flex-1 bg-transparent resize-none text-[12.5px] font-mono leading-snug placeholder-[#475569] max-h-24"
+            style={{ minHeight:20 }}
+          />
+          <button onClick={submit} disabled={busy || !input.trim()}
+            className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center bg-[#3b82f6] text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#2563eb]">
+            <Icon name="send" size={13}/>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================================
+   SIMULATION TOOLS
+   ========================================================================= */
+
+function SimulationTools({ devices, connections, selectedId, apiSettings, onResult }){
+  const [sourceId, setSourceId] = useState(selectedId || (devices[0] && devices[0].id) || '');
+  const [destIp, setDestIp] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [output, setOutput] = useState(null);
+  const [mode, setMode] = useState('ping');
+
+  useEffect(()=>{ if(selectedId) setSourceId(selectedId); }, [selectedId]);
+  useEffect(()=>{
+    if(!devices.find(d=>d.id===sourceId) && devices[0]) setSourceId(devices[0].id);
+  }, [devices]);
+
+  const hasKey = !!apiSettings.apiKey;
+
+  const runPingOrTrace = async (kind)=>{
+    if(!sourceId || !destIp.trim()){ setOutput('% Select a source device and enter a destination IP.'); setMode(kind); return; }
+    setMode(kind); setBusy(true); setOutput(null);
+    const fallback = kind==='ping' ? simulatePing(devices, connections, sourceId, destIp.trim()) : simulateTraceroute(devices, connections, sourceId, destIp.trim());
+    if(!hasKey){ setOutput(fallback); setBusy(false); return; }
+    const source = devices.find(d=>d.id===sourceId);
+    const prompt = `Act as a Cisco IOS device terminal. Source device: ${source.label}. Run "${kind === 'ping' ? 'ping' : 'traceroute'} ${destIp.trim()}" and reply with ONLY the realistic terminal output (no explanation, no markdown fences), reasoning logically from the topology and configs given about whether the destination is reachable.`;
+    const res = await callAI(apiSettings, [{ role:'user', content:prompt }], NETWORK_SYSTEM_PROMPT({ devices, connections }, source));
+    setOutput(res.ok ? stripJsonBlock(res.text) : `${fallback}\n\n(AI enrichment failed: ${res.error})`);
+    setBusy(false);
+  };
+
+  const runShow = async (cmd)=>{
+    if(!sourceId){ setOutput('% Select a source device first.'); return; }
+    setMode(cmd); setBusy(true); setOutput(null);
+    const device = devices.find(d=>d.id===sourceId);
+    const fallback = cmd==='show ip route' ? simulateShowIpRoute(device)
+      : cmd==='show interfaces' ? simulateShowInterfaces(device)
+      : simulateShowVlanBrief(device);
+    if(!hasKey){ setOutput(fallback); setBusy(false); return; }
+    const prompt = `Act as a Cisco IOS device terminal for ${device.label}. Run "${cmd}" and reply with ONLY the realistic terminal output (no explanation, no markdown fences), based on the topology and configs given.`;
+    const res = await callAI(apiSettings, [{ role:'user', content:prompt }], NETWORK_SYSTEM_PROMPT({ devices, connections }, device));
+    setOutput(res.ok ? stripJsonBlock(res.text) : `${fallback}\n\n(AI enrichment failed: ${res.error})`);
+    setBusy(false);
+  };
+
+  return (
+    <div className="flex flex-col px-4 py-3 gap-2.5">
+      <h3 className="font-display text-[11px] tracking-widest text-[#475569] uppercase flex items-center gap-1.5">
+        <Icon name="activity" size={13} className="text-[#3b82f6]"/> Simulation Tools
+      </h3>
+
+      <div className="grid grid-cols-2 gap-1.5">
+        <select value={sourceId} onChange={e=>setSourceId(e.target.value)}
+          className="col-span-2 bg-[#1a2235] border border-[#1e3a5f] rounded px-2 py-1.5 text-[11px] font-mono focus:border-[#3b82f6]">
+          <option value="">Source device…</option>
+          {devices.map(d=>(<option key={d.id} value={d.id}>{d.label}</option>))}
+        </select>
+        <input value={destIp} onChange={e=>setDestIp(e.target.value)} placeholder="Destination IP"
+          className="col-span-2 bg-[#1a2235] border border-[#1e3a5f] rounded px-2 py-1.5 text-[11px] font-mono focus:border-[#3b82f6]" />
+        <button onClick={()=>runPingOrTrace('ping')} disabled={busy}
+          className="flex items-center justify-center gap-1.5 text-[11px] font-mono px-2 py-1.5 rounded-md bg-[#1a2235] border border-[#1e3a5f] hover:border-[#3b82f6]/50 text-[#cbd5e1] disabled:opacity-50">
+          <Icon name="zap" size={12}/> Ping
+        </button>
+        <button onClick={()=>runPingOrTrace('traceroute')} disabled={busy}
+          className="flex items-center justify-center gap-1.5 text-[11px] font-mono px-2 py-1.5 rounded-md bg-[#1a2235] border border-[#1e3a5f] hover:border-[#3b82f6]/50 text-[#cbd5e1] disabled:opacity-50">
+          <Icon name="route" size={12}/> Traceroute
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {['show ip route','show interfaces','show vlan brief'].map(cmd=>(
+          <button key={cmd} onClick={()=>runShow(cmd)} disabled={busy}
+            className="flex items-center gap-1 text-[10px] font-mono px-2 py-1 rounded border border-[#1e3a5f] text-[#94a3b8] hover:text-white hover:border-[#3b82f6]/50 disabled:opacity-50">
+            <Icon name="terminal" size={10}/> {cmd}
+          </button>
+        ))}
+      </div>
+
+      {(busy || output) && (
+        <div className="bg-[#0d1320] border border-[#1e3a5f] rounded-md p-2.5 max-h-44 overflow-y-auto">
+          {busy ? (
+            <div className="flex items-center gap-2 text-[11px] font-mono text-[#64748b]"><Icon name="loader" size={12}/> Running {mode}…</div>
+          ) : (
+            <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-[#86efac]">{output}</pre>
+          )}
+        </div>
+      )}
+      {!hasKey && <p className="font-mono text-[9.5px] text-[#475569]">No API key set — using built-in logical simulation. Add a key for AI-narrated results.</p>}
+    </div>
+  );
+}
+
+
+/* =========================================================================
+   HEADER
+   ========================================================================= */
+
+function Header({ projectName, onRenameProject, onSave, onOpenExport, onOpenSettings, hasKey }){
+  const [editing, setEditing] = useState(false);
+  const [temp, setTemp] = useState(projectName);
+
+  return (
+    <header className="h-14 shrink-0 flex items-center gap-3 px-4 bg-[#111827] border-b border-[#1e3a5f] z-30">
+      <div className="flex items-center gap-2">
+        <div className="w-8 h-8 rounded-md bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8] flex items-center justify-center shadow-lg shadow-blue-500/20">
+          <Icon name="router" size={16} className="text-white"/>
+        </div>
+        <span className="font-display font-bold text-[14px] tracking-tight hidden sm:inline">NetSim<span className="text-[#3b82f6]">AI</span></span>
+      </div>
+
+      <div className="h-5 w-px bg-[#1e3a5f] mx-1 hidden sm:block" />
+
+      {editing ? (
+        <input autoFocus value={temp} onChange={e=>setTemp(e.target.value)}
+          onBlur={()=>{ onRenameProject(temp || projectName); setEditing(false); }}
+          onKeyDown={e=>{ if(e.key==='Enter') e.target.blur(); }}
+          className="bg-[#1a2235] border border-[#3b82f6] rounded px-2 py-1 text-[12.5px] font-mono w-48" />
+      ) : (
+        <button onClick={()=>{ setTemp(projectName); setEditing(true); }}
+          className="font-mono text-[12.5px] text-[#cbd5e1] hover:text-white flex items-center gap-1.5 group">
+          {projectName} <Icon name="edit" size={11} className="opacity-0 group-hover:opacity-60"/>
+        </button>
+      )}
+
+      <div className="ml-auto flex items-center gap-2">
+        {!hasKey && (
+          <span className="hidden md:flex items-center gap-1 text-[10.5px] font-mono text-[#f59e0b] bg-[#1a1408] border border-[#f59e0b]/30 rounded-full px-2.5 py-1">
+            <Icon name="alert" size={10}/> No AI key set
+          </span>
+        )}
+        <button onClick={onSave} className="flex items-center gap-1.5 text-[12px] font-mono px-3 py-1.5 rounded-md text-[#cbd5e1] hover:bg-[#1a2235] transition-colors">
+          <Icon name="checkCircle" size={13}/> <span className="hidden sm:inline">Save</span>
+        </button>
+        <button onClick={onOpenExport} className="flex items-center gap-1.5 text-[12px] font-mono px-3 py-1.5 rounded-md text-[#cbd5e1] hover:bg-[#1a2235] transition-colors">
+          <Icon name="download" size={13}/> <span className="hidden sm:inline">Export</span>
+        </button>
+        <button onClick={onOpenSettings} className="flex items-center gap-1.5 text-[12px] font-mono px-3 py-1.5 rounded-md bg-[#1a2235] border border-[#1e3a5f] hover:border-[#3b82f6]/50 transition-colors">
+          <Icon name="settings" size={13}/> <span className="hidden sm:inline">API Settings</span>
+        </button>
+      </div>
+    </header>
+  );
+}
+
+/* =========================================================================
+   EXPORT MENU
+   ========================================================================= */
+
+function ExportMenu({ open, onClose, devices, connections, projectName, onImport }){
+  const fileRef = useRef(null);
+  if(!open) return null;
+
+  const exportAllZipped = async ()=>{
+    const zip = new JSZip();
+    devices.forEach(d=>{
+      zip.file(`${d.label.replace(/[^a-z0-9_\-]/gi,'_')}.txt`, d.config && d.config.trim() ? d.config : `! No configuration generated yet for ${d.label}`);
+    });
+    const blob = await zip.generateAsync({ type:'blob' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `${projectName.replace(/\s+/g,'_')}_configs.zip`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+    onClose();
+  };
+
+  const exportTopologyJson = ()=>{
+    downloadBlob(`${projectName.replace(/\s+/g,'_')}_topology.json`, JSON.stringify({ projectName, devices, connections }, null, 2), 'application/json');
+    onClose();
+  };
+
+  const exportLabReport = ()=>{
+    let md = `# ${projectName} — Lab Report\n\n`;
+    md += `Generated by NetSim AI on ${new Date().toLocaleString()}\n\n`;
+    md += `## Topology\n\n`;
+    md += `| Device | Type | Interfaces |\n|---|---|---|\n`;
+    devices.forEach(d=>{
+      const ifaceList = d.interfaces.map(i=>`${i.name} (${i.ipAddress||'no IP'})`).join(', ') || '—';
+      md += `| ${d.label} | ${DEVICE_TYPES[d.type].label} | ${ifaceList} |\n`;
+    });
+    md += `\n## Connections\n\n`;
+    md += `| From | To | Link Type |\n|---|---|---|\n`;
+    connections.forEach(c=>{
+      const a = devices.find(d=>d.id===c.source), b = devices.find(d=>d.id===c.target);
+      md += `| ${a ? a.label : c.source} | ${b ? b.label : c.target} | ${c.linkType} |\n`;
+    });
+    md += `\n## Device Configurations\n`;
+    devices.forEach(d=>{
+      md += `\n### ${d.label}\n\n\`\`\`\n${d.config && d.config.trim() ? d.config : '! No configuration generated yet'}\n\`\`\`\n`;
+    });
+    downloadBlob(`${projectName.replace(/\s+/g,'_')}_lab_report.md`, md, 'text/markdown');
+    onClose();
+  };
+
+  const handleImportFile = (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev)=>{
+      try{
+        const data = JSON.parse(ev.target.result);
+        if(Array.isArray(data.devices)) onImport(data);
+      }catch(err){ /* surfaced via toast in parent if needed */ }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+    onClose();
+  };
+
+  const items = [
+    { label:'Export All Configs (.zip)', icon:'folder', onClick:exportAllZipped },
+    { label:'Export Topology (.json)', icon:'fileText', onClick:exportTopologyJson },
+    { label:'Import Topology (.json)', icon:'upload', onClick:()=>fileRef.current.click() },
+    { label:'Export as Lab Report (.md)', icon:'fileText', onClick:exportLabReport },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-[200]" onMouseDown={onClose}>
+      <div onMouseDown={e=>e.stopPropagation()} className="absolute top-14 right-4 w-64 bg-[#1a2235] border border-[#1e3a5f] rounded-lg shadow-2xl py-1.5 font-mono text-[12.5px] overflow-hidden">
+        {items.map((it,i)=>(
+          <button key={i} onClick={it.onClick} className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-[#e2e8f0] hover:bg-[#212c45] transition-colors">
+            <Icon name={it.icon} size={14} className="text-[#60a5fa]"/> {it.label}
+          </button>
+        ))}
+        <input ref={fileRef} type="file" accept=".json" onChange={handleImportFile} className="hidden" />
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================================
+   ROOT APP
+   ========================================================================= */
+
+function App(){
+  const starter = useMemo(()=>buildStarterTopology(), []);
+  const [devices, setDevices] = useState(starter.devices);
+  const [connections, setConnections] = useState(starter.connections);
+  const [selectedId, setSelectedId] = useState(null);
+  const [projectName, setProjectName] = useState('Untitled Network');
+  const [toasts, setToasts] = useState([]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [canvasMenu, setCanvasMenu] = useState(null); // {x,y,world}
+  const [deviceMenu, setDeviceMenu] = useState(null); // {x,y,device}
+  const [edgeMenu, setEdgeMenu] = useState(null); // {x,y,conn}
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [cliBusy, setCliBusy] = useState(false);
+  const [rightTab, setRightTab] = useState('chat'); // 'chat' | 'device'
+  const [apiSettings, setApiSettings] = useState({ provider:'google', apiKey:'AIzaSyBpwXGjlMUtFSZZ5kInQa_V4AZvQ0IWGJ0', model:'gemini-2.5-flash', baseUrl:'' });
+
+  const viewRef = useRef(null);
+  const historyRef = useRef([]); // undo stack
+
+  const selectedDevice = devices.find(d=>d.id===selectedId) || null;
+
+  /* ---------------- toast helpers ---------------- */
+  const pushToast = useCallback((message, type='info')=>{
+    const id = nowId();
+    setToasts(t=>[...t, { id, message, type }]);
+    setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)), 4800);
+  }, []);
+  const dismissToast = (id)=>setToasts(t=>t.filter(x=>x.id!==id));
+
+  useEffect(()=>{
+    const id = nowId();
+    setToasts(t=>[...t, { id, message:'Welcome to NetSim AI! Set your API key to enable AI features.', type:'info' }]);
+    setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)), 7000);
+  }, []);
+
+  /* ---------------- undo ---------------- */
+  const pushHistory = useCallback(()=>{
+    historyRef.current.push({ devices: deepClone(devices), connections: deepClone(connections) });
+    if(historyRef.current.length > 30) historyRef.current.shift();
+  }, [devices, connections]);
+
+  const undo = useCallback(()=>{
+    const prev = historyRef.current.pop();
+    if(!prev){ pushToast('Nothing to undo.'); return; }
+    setDevices(prev.devices); setConnections(prev.connections);
+    pushToast('Undid last action.');
+  }, [pushToast]);
+
+  /* ---------------- device CRUD ---------------- */
+  const addDevice = useCallback((type, worldPos)=>{
+    pushHistory();
+    setDevices(prev=>{
+      const meta = DEVICE_TYPES[type];
+      const count = prev.filter(d=>d.type===type).length;
+      const label = `${meta.prefix}${meta.startIdx + count}`;
+      const pos = worldPos || { x: 400 + Math.random()*80, y: 300 + Math.random()*80 };
+      return [...prev, { id: uid(type), type, label, position: pos, interfaces: [], vlans: [], config:'', notes:'' }];
+    });
+  }, [pushHistory]);
+
+  const updateDevice = useCallback((id, patch)=>{
+    setDevices(prev=>prev.map(d=> d.id===id ? { ...d, ...patch } : d));
+  }, []);
+
+  const moveDevice = useCallback((id, pos)=>{
+    setDevices(prev=>prev.map(d=> d.id===id ? { ...d, position:pos } : d));
+  }, []);
+
+  const moveDeviceEnd = useCallback((id, didMove)=>{
+    if(didMove) pushHistory();
+  }, [pushHistory]);
+
+  const deleteDevice = useCallback((id)=>{
+    pushHistory();
+    setDevices(prev=>prev.filter(d=>d.id!==id));
+    setConnections(prev=>prev.filter(c=>c.source!==id && c.target!==id));
+    setSelectedId(sel=> sel===id ? null : sel);
+  }, [pushHistory]);
+
+  const duplicateDevice = useCallback((id)=>{
+    pushHistory();
+    setDevices(prev=>{
+      const orig = prev.find(d=>d.id===id);
+      if(!orig) return prev;
+      const meta = DEVICE_TYPES[orig.type];
+      const count = prev.filter(d=>d.type===orig.type).length;
+      const clone = {
+        ...deepClone(orig),
+        id: uid(orig.type),
+        label: `${meta.prefix}${meta.startIdx + count}`,
+        position: { x: orig.position.x + 60, y: orig.position.y + 60 },
+        interfaces: orig.interfaces.map(i=>({ ...i, connectedTo:null })),
+      };
+      return [...prev, clone];
+    });
+  }, [pushHistory]);
+
+  const renameDevice = useCallback((id, label)=>{
+    pushHistory();
+    updateDevice(id, { label });
+  }, [pushHistory, updateDevice]);
+
+  const addInterfaceManual = useCallback((id)=>{
+    pushHistory();
+    setDevices(prev=>prev.map(d=>{
+      if(d.id!==id) return d;
+      const name = getNextInterfaceName(d);
+      return { ...d, interfaces:[...d.interfaces, { name, ipAddress:'', subnetMask:'', status:'up', connectedTo:null }] };
+    }));
+  }, [pushHistory]);
+
+  const deleteInterface = useCallback((deviceId, ifaceName)=>{
+    pushHistory();
+    setDevices(prev=>{
+      const dev = prev.find(d=>d.id===deviceId);
+      const iface = dev && dev.interfaces.find(i=>i.name===ifaceName);
+      let next = prev.map(d=> d.id===deviceId ? { ...d, interfaces: d.interfaces.filter(i=>i.name!==ifaceName) } : d);
+      if(iface && iface.connectedTo){
+        const [otherId, otherIface] = iface.connectedTo.split('::');
+        next = next.map(d=> d.id===otherId ? { ...d, interfaces: d.interfaces.map(i=> i.name===otherIface ? { ...i, connectedTo:null } : i) } : d);
+      }
+      return next;
+    });
+    setConnections(prev=>prev.filter(c=>!((c.source===deviceId && c.sourceHandle===ifaceName) || (c.target===deviceId && c.targetHandle===ifaceName))));
+  }, [pushHistory]);
+
+  /* ---------------- connections ---------------- */
+  const connectDevices = useCallback((sourceId, targetId)=>{
+    if(sourceId===targetId) return;
+    const already = connections.some(c=>(c.source===sourceId && c.target===targetId) || (c.source===targetId && c.target===sourceId));
+    if(already){ pushToast('These devices are already connected.', 'error'); return; }
+    const a = devices.find(d=>d.id===sourceId), b = devices.find(d=>d.id===targetId);
+    if(!a || !b) return;
+    pushHistory();
+    const ifaceA = getNextInterfaceName(a), ifaceB = getNextInterfaceName(b);
+    const linkType = defaultLinkType(a.type, b.type);
+    const newConn = { id: uid('conn'), source:sourceId, sourceHandle:ifaceA, target:targetId, targetHandle:ifaceB, linkType, color: LINK_COLORS[linkType] };
+    setConnections(prev=>[...prev, newConn]);
+    setDevices(prev=>prev.map(d=>{
+      if(d.id===sourceId) return { ...d, interfaces:[...d.interfaces, { name:ifaceA, ipAddress:'', subnetMask:'', status:'up', connectedTo:`${targetId}::${ifaceB}` }] };
+      if(d.id===targetId) return { ...d, interfaces:[...d.interfaces, { name:ifaceB, ipAddress:'', subnetMask:'', status:'up', connectedTo:`${sourceId}::${ifaceA}` }] };
+      return d;
+    }));
+    pushToast(`Connected ${a.label} ↔ ${b.label} (${linkType}).`, 'success');
+  }, [devices, connections, pushHistory, pushToast]);
+
+  const deleteConnection = useCallback((connId)=>{
+    pushHistory();
+    setConnections(prev=>{
+      const conn = prev.find(c=>c.id===connId);
+      if(conn){
+        setDevices(d=>d.map(dev=>{
+          if(dev.id===conn.source) return { ...dev, interfaces: dev.interfaces.map(i=> i.name===conn.sourceHandle ? { ...i, connectedTo:null } : i) };
+          if(dev.id===conn.target) return { ...dev, interfaces: dev.interfaces.map(i=> i.name===conn.targetHandle ? { ...i, connectedTo:null } : i) };
+          return dev;
+        }));
+      }
+      return prev.filter(c=>c.id!==connId);
+    });
+  }, [pushHistory]);
+
+  const updateConnectionType = useCallback((connId, linkType)=>{
+    setConnections(prev=>prev.map(c=> c.id===connId ? { ...c, linkType, color: LINK_COLORS[linkType] } : c));
+  }, []);
+
+  /* ---------------- bulk ops ---------------- */
+  const clearAll = useCallback(()=>{
+    if(devices.length===0 && connections.length===0) return;
+    if(!window.confirm('Clear the entire canvas? This cannot be undone via the app (Ctrl+Z works once).')) return;
+    pushHistory();
+    setDevices([]); setConnections([]); setSelectedId(null);
+    pushToast('Canvas cleared.');
+  }, [devices, connections, pushHistory, pushToast]);
+
+  const autoLayout = useCallback(()=>{
+    pushHistory();
+    setDevices(prev=>{
+      const byType = {};
+      prev.forEach(d=>{ (byType[d.type] = byType[d.type] || []).push(d); });
+      const order = ['cloud','router','firewall','switch','server','pc'];
+      let row = 0;
+      const next = [];
+      order.forEach(type=>{
+        const list = byType[type] || [];
+        if(list.length===0) return;
+        list.forEach((d,i)=>{
+          next.push({ ...d, position:{ x: 140 + i*170, y: 100 + row*160 } });
+        });
+        row += 1;
+      });
+      return next;
+    });
+    setTimeout(()=>{ viewRef.current && viewRef.current.zoomToFit(); }, 50);
+    pushToast('Auto layout applied.');
+  }, [pushHistory, pushToast]);
+
+  const zoomFit = useCallback(()=>{ viewRef.current && viewRef.current.zoomToFit(); }, []);
+
+  const importTopology = useCallback((data)=>{
+    pushHistory();
+    setDevices(data.devices || []);
+    setConnections(data.connections || []);
+    if(data.projectName) setProjectName(data.projectName);
+    setSelectedId(null);
+    pushToast('Topology imported.', 'success');
+  }, [pushHistory, pushToast]);
+
+  /* ---------------- AI chat ---------------- */
+  const applyAiAction = useCallback((action)=>{
+    if(!action || action.action !== 'update_configs') return [];
+    const touched = [];
+    setDevices(prev=>prev.map(d=>{
+      const upd = (action.devices || []).find(u=>u.id===d.id || u.id===d.label);
+      if(!upd) return d;
+      touched.push(d.label);
+      let interfaces = d.interfaces;
+      if(Array.isArray(upd.interfaces)){
+        interfaces = d.interfaces.map(existing=>{
+          const match = upd.interfaces.find(u=>u.name===existing.name);
+          return match ? { ...existing, ipAddress: match.ipAddress ?? existing.ipAddress, subnetMask: match.subnetMask ?? existing.subnetMask, status: match.status || existing.status } : existing;
+        });
+        // also add any brand-new interfaces the AI introduced
+        upd.interfaces.forEach(u=>{
+          if(!interfaces.find(i=>i.name===u.name)){
+            interfaces = [...interfaces, { name:u.name, ipAddress:u.ipAddress||'', subnetMask:u.subnetMask||'', status:u.status||'up', connectedTo:null }];
+          }
+        });
+      }
+      return { ...d, config: upd.config ?? d.config, interfaces };
+    }));
+    return touched;
+  }, []);
+
+  const sendChat = useCallback(async (text)=>{
+    pushHistory();
+    setChatMessages(prev=>[...prev, { role:'user', text }]);
+    setChatBusy(true);
+    const topology = { devices, connections };
+    const systemPrompt = NETWORK_SYSTEM_PROMPT(topology, selectedDevice);
+    const history = chatMessages.map(m=>({ role:m.role, content:m.text }));
+    const res = await callAI(apiSettings, [...history, { role:'user', content:text }], systemPrompt);
+    if(!res.ok){
+      setChatMessages(prev=>[...prev, { role:'assistant', text:res.error, error:true }]);
+      setChatBusy(false);
+      return;
+    }
+    const action = extractJsonAction(res.text);
+    const displayText = stripJsonBlock(res.text);
+    const touched = applyAiAction(action);
+    setChatMessages(prev=>[...prev, { role:'assistant', text: displayText || (action && action.summary) || res.text, appliedTo: touched }]);
+    if(touched.length) pushToast(`AI updated configuration for ${touched.join(', ')}.`, 'success');
+    setChatBusy(false);
+  }, [devices, connections, selectedDevice, chatMessages, apiSettings, applyAiAction, pushHistory, pushToast]);
+
+  const improveWithAI = useCallback(async ()=>{
+    if(!selectedDevice) return;
+    setRightTab('chat');
+    setCliBusy(true);
+    await sendChat(`Review and improve the current CLI configuration for ${selectedDevice.label}:\n\n${selectedDevice.config || '(empty — generate a sensible baseline)'}`);
+    setCliBusy(false);
+  }, [selectedDevice, sendChat]);
+
+  /* ---------------- keyboard shortcuts ---------------- */
+  useEffect(()=>{
+    const handler = (e)=>{
+      const tag = (e.target.tagName || '').toLowerCase();
+      const typing = tag==='input' || tag==='textarea' || e.target.isContentEditable;
+      if(e.key === 'Delete' || e.key === 'Backspace'){
+        if(typing) return;
+        if(selectedId){ e.preventDefault(); deleteDevice(selectedId); }
+      } else if((e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='z'){
+        e.preventDefault(); undo();
+      } else if((e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='s'){
+        e.preventDefault(); setShowExport(true);
+      } else if(e.key === 'Escape'){
+        setSelectedId(null); setCanvasMenu(null); setDeviceMenu(null); setEdgeMenu(null); setShowSettings(false); setShowExport(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return ()=>window.removeEventListener('keydown', handler);
+  }, [selectedId, deleteDevice, undo]);
+
+  useEffect(()=>{ if(selectedId) setRightTab('device'); }, [selectedId]);
+
+  /* ---------------- context menu item builders ---------------- */
+  const canvasMenuItems = canvasMenu ? [
+    { label:'Add Router', icon:'router', onClick:()=>addDevice('router', canvasMenu.world) },
+    { label:'Add Switch', icon:'switch', onClick:()=>addDevice('switch', canvasMenu.world) },
+    { label:'Add PC', icon:'pc', onClick:()=>addDevice('pc', canvasMenu.world) },
+    { divider:true },
+    { label:'Auto Layout', icon:'layout', onClick:autoLayout },
+    { label:'Clear All', icon:'trash', danger:true, onClick:clearAll },
+  ] : [];
+
+  const deviceMenuItems = deviceMenu ? [
+    { label:'Configure with AI', icon:'sparkles', disabled:!apiSettings.apiKey, onClick:()=>{
+        setSelectedId(deviceMenu.device.id);
+        sendChat(`Generate a complete, sensible baseline configuration for ${deviceMenu.device.label} based on its current connections in the topology.`);
+      } },
+    { label:'Add Interface', icon:'plus', onClick:()=>addInterfaceManual(deviceMenu.device.id) },
+    { label:'Duplicate', icon:'copy', onClick:()=>duplicateDevice(deviceMenu.device.id) },
+    { divider:true },
+    { label:'Delete', icon:'trash', danger:true, onClick:()=>deleteDevice(deviceMenu.device.id) },
+  ] : [];
+
+  const edgeMenuItems = edgeMenu ? [
+    { label:'Set: Ethernet', icon:'wifi', onClick:()=>updateConnectionType(edgeMenu.conn.id, 'ethernet') },
+    { label:'Set: Serial', icon:'wifi', onClick:()=>updateConnectionType(edgeMenu.conn.id, 'serial') },
+    { label:'Set: Fiber', icon:'wifi', onClick:()=>updateConnectionType(edgeMenu.conn.id, 'fiber') },
+    { label:'Set: Trunk', icon:'wifi', onClick:()=>updateConnectionType(edgeMenu.conn.id, 'trunk') },
+    { divider:true },
+    { label:'Delete Link', icon:'trash', danger:true, onClick:()=>deleteConnection(edgeMenu.conn.id) },
+  ] : [];
+
+  const chatSuggestions = [
+    'Configure a network with RIP between 3 routers',
+    'Create a star topology with 1 core switch and 4 PCs',
+    'What is the difference between RIP and OSPF?',
+    "Why can't PC0 ping PC1?",
+  ];
+
+  return (
+    <div className="h-full flex flex-col">
+      <Header
+        projectName={projectName}
+        onRenameProject={setProjectName}
+        onSave={()=>setShowExport(true)}
+        onOpenExport={()=>setShowExport(true)}
+        onOpenSettings={()=>setShowSettings(true)}
+        hasKey={!!apiSettings.apiKey}
+      />
+
+      <div className="flex-1 flex min-h-0">
+        <DevicePalette
+          onAddDevice={(type)=>addDevice(type, null)}
+          onClearAll={clearAll}
+          onAutoLayout={autoLayout}
+          onZoomFit={zoomFit}
+        />
+
+        <Canvas
+          devices={devices}
+          connections={connections}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onMoveDevice={moveDevice}
+          onMoveDeviceEnd={moveDeviceEnd}
+          onConnect={connectDevices}
+          onDeleteConnection={deleteConnection}
+          onRenameDevice={renameDevice}
+          viewRef={viewRef}
+          onContextMenuCanvas={{
+            open:(x,y,world)=>{ setCanvasMenu({ x, y, world }); setDeviceMenu(null); setEdgeMenu(null); },
+            addDeviceAt:(type, world)=>addDevice(type, world),
+          }}
+          onContextMenuDevice={(device, x, y)=>{ setDeviceMenu({ device, x, y }); setCanvasMenu(null); setEdgeMenu(null); setSelectedId(device.id); }}
+          onContextMenuEdge={(conn, x, y)=>{ setEdgeMenu({ conn, x, y }); setCanvasMenu(null); setDeviceMenu(null); }}
+          welcomeToast={null}
+        />
+
+        <div className="w-[360px] shrink-0 bg-[#111827] border-l border-[#1e3a5f] flex flex-col min-h-0">
+          <div className="flex border-b border-[#1e3a5f]">
+            <button onClick={()=>setRightTab('chat')}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 font-mono text-[11px] border-b-2 -mb-px transition-colors ${rightTab==='chat' ? 'border-[#3b82f6] text-white' : 'border-transparent text-[#64748b] hover:text-[#cbd5e1]'}`}>
+              <Icon name="bot" size={13}/> AI Chat
+            </button>
+            <button onClick={()=>setRightTab('device')}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 font-mono text-[11px] border-b-2 -mb-px transition-colors ${rightTab==='device' ? 'border-[#3b82f6] text-white' : 'border-transparent text-[#64748b] hover:text-[#cbd5e1]'}`}>
+              <Icon name="terminal" size={13}/> Device {selectedDevice ? `· ${selectedDevice.label}` : ''}
+            </button>
+          </div>
+
+          {rightTab==='chat' ? (
+            <Fragment>
+              <AIChat
+                messages={chatMessages}
+                onSend={sendChat}
+                busy={chatBusy}
+                hasKey={!!apiSettings.apiKey}
+                onOpenSettings={()=>setShowSettings(true)}
+                suggestions={chatSuggestions}
+              />
+              <div className="overflow-y-auto">
+                <SimulationTools devices={devices} connections={connections} selectedId={selectedId} apiSettings={apiSettings} />
+              </div>
+            </Fragment>
+          ) : (
+            <DeviceConfigPanel
+              device={selectedDevice}
+              onUpdateDevice={(patch)=> selectedDevice && updateDevice(selectedDevice.id, patch)}
+              onDeleteInterface={(name)=> selectedDevice && deleteInterface(selectedDevice.id, name)}
+              onAddInterface={()=> selectedDevice && addInterfaceManual(selectedDevice.id)}
+              onImproveWithAI={improveWithAI}
+              aiBusy={cliBusy || chatBusy}
+            />
+          )}
+        </div>
+      </div>
+
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+
+      <ApiSettingsModal open={showSettings} onClose={()=>setShowSettings(false)} settings={apiSettings} onSave={setApiSettings} />
+      <ExportMenu open={showExport} onClose={()=>setShowExport(false)} devices={devices} connections={connections} projectName={projectName} onImport={importTopology} />
+
+      <ContextMenu menu={canvasMenu} onClose={()=>setCanvasMenu(null)} items={canvasMenuItems} />
+      <ContextMenu menu={deviceMenu} onClose={()=>setDeviceMenu(null)} items={deviceMenuItems} />
+      <ContextMenu menu={edgeMenu} onClose={()=>setEdgeMenu(null)} items={edgeMenuItems} />
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
